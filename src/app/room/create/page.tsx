@@ -35,15 +35,11 @@ export default function CreateRoomPage() {
     playRoomCreated();
     setLoading(true);
 
+    // The realtime server creates the room when the first socket joins;
+    // the creator becomes host by join order. Carry the chosen mode so the
+    // room page can apply it once connected.
     const code = generateCode();
-    sessionStorage.setItem(`room:${code}`, JSON.stringify({
-      host: n,
-      mode,
-      players: [{ id: "host", name: n, isHost: true }],
-      createdAt: Date.now(),
-    }));
-
-    router.push(`/room/${code}?name=${encodeURIComponent(n)}&host=1`);
+    router.push(`/room/${code}?name=${encodeURIComponent(n)}&mode=${mode}`);
   }, [name, mode, router]);
 
   return (

@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: truth-n-dare-server
+    runtime: node
+    rootDir: server
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: CLIENT_ORIGIN
+        sync: false
