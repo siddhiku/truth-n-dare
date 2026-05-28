@@ -8,6 +8,7 @@ import { ModeSelector } from "@/components/ModeSelector";
 import { PromptCard } from "@/components/PromptCard";
 import { AdSlot } from "@/components/AdSlot";
 import { ChaosMode, PromptType } from "@/lib/prompts";
+import { playClick, playChoicePick, playCardReveal, playHurray, playNextTurn } from "@/lib/sounds";
 
 type GameState = "idle" | "spinning" | "choosing" | "loading" | "reveal" | "done";
 
@@ -30,6 +31,7 @@ export default function SoloPage() {
   }, []);
 
   const choose = useCallback(async (type: PromptType) => {
+    playChoicePick();
     setChosenType(type);
     setGameState("loading");
 
@@ -45,10 +47,17 @@ export default function SoloPage() {
       setPrompt("What's the last white lie you told today?");
     }
 
+    playCardReveal();
     setGameState("reveal");
   }, [mode]);
 
   const nextRound = useCallback(() => {
+    const newRounds = stats.rounds + 1;
+    if (newRounds % 5 === 0) {
+      playHurray();
+    } else {
+      playNextTurn();
+    }
     setStats((s) => ({
       rounds: s.rounds + 1,
       truths: s.truths + (chosenType === "truth" ? 1 : 0),
@@ -57,7 +66,7 @@ export default function SoloPage() {
     }));
     setGameState("idle");
     setPrompt("");
-  }, [chosenType]);
+  }, [chosenType, stats.rounds]);
 
   const reset = useCallback(() => {
     setStats({ rounds: 0, truths: 0, dares: 0, streak: 0 });
@@ -129,7 +138,7 @@ export default function SoloPage() {
               transition={{ duration: 0.3 }}
             >
               <p className="text-white/30 text-xs uppercase tracking-widest text-center mb-3">Chaos Level</p>
-              <ModeSelector value={mode} onChange={setMode} />
+              <ModeSelector value={mode} onChange={(m) => { playClick(); setMode(m); }} />
             </motion.div>
           )}
         </AnimatePresence>

@@ -1,8 +1,7 @@
 "use client";
 
-import { motion, useScroll, useTransform } from "framer-motion";
+import { motion } from "framer-motion";
 import Link from "next/link";
-import { useRef } from "react";
 
 function AnimatedBottle() {
   return (
@@ -138,13 +137,6 @@ export default function LandingPage() {
         initial="hidden"
         animate="show"
       >
-        {/* Eyebrow */}
-        <motion.div variants={stagger.item} className="mb-6">
-          <span className="glass text-white/50 text-xs font-medium tracking-[0.2em] uppercase px-4 py-2 rounded-full">
-            AI-Powered Party Game
-          </span>
-        </motion.div>
-
         {/* Headline */}
         <motion.h1
           variants={stagger.item}

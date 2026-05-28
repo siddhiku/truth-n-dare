@@ -2,12 +2,14 @@
 
 import { motion, AnimatePresence, useAnimation } from "framer-motion";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useParams, useSearchParams, useRouter } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { PromptCard } from "@/components/PromptCard";
 import { ModeSelector } from "@/components/ModeSelector";
 import { AdSlot } from "@/components/AdSlot";
 import { ChaosMode, PromptType } from "@/lib/prompts";
+import { getOrCreateUsername, saveUsername } from "@/lib/username";
+import { playClick, playBottleSpin, playPlayerSelected, playChoicePick, playCardReveal, playHurray, playNextTurn, playRoomCreated } from "@/lib/sounds";
 
 interface Player {
   id: string;
@@ -17,6 +19,7 @@ interface Player {
 
 type RoomPhase = "lobby" | "spinning" | "choosing" | "loading" | "reveal";
 
+// ─── Copy button ─────────────────────────────────────────────────────────────
 function CopyButton({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -32,19 +35,23 @@ function CopyButton({ code }: { code: string }) {
       className="glass border border-white/10 rounded-xl px-4 py-2.5 flex items-center gap-2"
     >
       <span className="text-white font-bold tracking-[0.25em] text-sm">{code}</span>
-      <span className="text-white/40 text-xs">{copied ? "Copied!" : "Copy"}</span>
+      <span className="text-white/40 text-xs">{copied ? "✓ Copied" : "Copy"}</span>
     </motion.button>
   );
 }
 
-function PlayerAvatar({ player, selected, index, total }: {
+// ─── Player avatar around the ring ───────────────────────────────────────────
+function PlayerAvatar({
+  player, selected, isCurrentTurn, index, total,
+}: {
   player: Player;
   selected: boolean;
+  isCurrentTurn: boolean;
   index: number;
   total: number;
 }) {
   const angle = (index / total) * 360 - 90;
-  const radius = total <= 4 ? 100 : total <= 6 ? 120 : 140;
+  const radius = total <= 4 ? 110 : total <= 6 ? 128 : 148;
   const rad = (angle * Math.PI) / 180;
   const x = Math.cos(rad) * radius;
   const y = Math.sin(rad) * radius;
@@ -57,90 +64,108 @@ function PlayerAvatar({ player, selected, index, total }: {
         top: "50%",
         transform: `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`,
       }}
-      animate={selected ? {
-        scale: [1, 1.15, 1.1],
-        filter: ["brightness(1)", "brightness(1.4)", "brightness(1.3)"],
-      } : {
-        scale: 1,
-        filter: "brightness(1)",
-      }}
-      transition={{ duration: 0.5, ease: "easeOut" }}
+      animate={selected ? { scale: 1.15 } : { scale: 1 }}
+      transition={{ duration: 0.45, ease: [0.34, 1.56, 0.64, 1] }}
     >
+      {/* Glow ring for selected */}
       {selected && (
         <motion.div
-          className="absolute inset-0 rounded-full"
-          animate={{ boxShadow: ["0 0 0px rgba(255,255,255,0.3)", "0 0 30px rgba(255,255,255,0.5)", "0 0 20px rgba(255,255,255,0.4)"] }}
-          transition={{ duration: 0.8, repeat: Infinity, repeatType: "reverse" }}
+          className="absolute -inset-1 rounded-full"
+          animate={{
+            boxShadow: [
+              "0 0 0px rgba(255,255,255,0)",
+              "0 0 24px rgba(255,255,255,0.55)",
+              "0 0 16px rgba(255,255,255,0.4)",
+            ],
+          }}
+          transition={{ duration: 0.6, repeat: Infinity, repeatType: "reverse" }}
         />
       )}
+
+      {/* "Your turn" arrow indicator */}
+      {isCurrentTurn && !selected && (
+        <motion.div
+          className="absolute -top-5 text-white/70 text-xs"
+          animate={{ y: [0, -3, 0] }}
+          transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+        >
+          ▼
+        </motion.div>
+      )}
+
       <motion.div
         className={`
-          w-12 h-12 rounded-full flex items-center justify-center text-base font-bold
-          border-2 transition-all duration-300
+          w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold
+          border-2 transition-colors duration-200
           ${selected
-            ? "bg-white text-black border-white shadow-glow"
-            : "bg-white/8 text-white/70 border-white/15"
+            ? "bg-white text-black border-white"
+            : isCurrentTurn
+            ? "bg-white/15 text-white border-white/50"
+            : "bg-white/6 text-white/60 border-white/12"
           }
         `}
       >
         {player.name.charAt(0).toUpperCase()}
       </motion.div>
-      <span className={`text-xs font-medium max-w-[60px] truncate text-center ${selected ? "text-white" : "text-white/40"}`}>
+
+      <span
+        className={`text-[10px] font-medium max-w-[56px] truncate text-center leading-tight
+          ${selected ? "text-white" : isCurrentTurn ? "text-white/80" : "text-white/35"}`}
+      >
         {player.name}
       </span>
-      {player.isHost && (
-        <span className="text-[9px] text-white/25 uppercase tracking-wide">host</span>
+
+      {isCurrentTurn && !selected && (
+        <span className="text-[9px] text-white/40 uppercase tracking-wide">spin!</span>
       )}
     </motion.div>
   );
 }
 
+// ─── Bottle arena ─────────────────────────────────────────────────────────────
 function BottleArena({
-  players,
-  selectedIdx,
-  onSpin,
-  spinning,
-  canSpin,
+  players, selectedIdx, onSpin, spinning, canSpin,
 }: {
   players: Player[];
   selectedIdx: number | null;
   onSpin: () => void;
   spinning: boolean;
   canSpin: boolean;
+  currentTurnIdx: number;
 }) {
   const controls = useAnimation();
-  const accumulatedRotation = useRef(0);
+  const accumulated = useRef(0);
 
   useEffect(() => {
-    if (spinning) {
-      const extra = 5 + Math.floor(Math.random() * 6);
-      const base = (selectedIdx !== null && players.length > 0)
+    if (!spinning) return;
+    const finalAngle =
+      selectedIdx !== null && players.length > 0
         ? (selectedIdx / players.length) * 360
         : Math.random() * 360;
-      const total = accumulatedRotation.current + extra * 360 + base;
-      accumulatedRotation.current = total;
+    const spins = 5 + Math.floor(Math.random() * 6);
+    const total = accumulated.current + spins * 360 + finalAngle;
+    accumulated.current = total;
 
-      controls.start({
-        rotate: total,
-        transition: {
-          duration: 3.5 + Math.random(),
-          ease: [0.22, 0.03, 0.1, 1],
-        },
-      });
-    }
+    controls.start({
+      rotate: total,
+      transition: { duration: 3.8 + Math.random() * 0.8, ease: [0.22, 0.03, 0.08, 1] },
+    });
   }, [spinning, selectedIdx, players.length, controls]);
 
-  const arenaSize = 340;
+  const size = 340;
 
   return (
-    <div
-      className="relative flex items-center justify-center mx-auto"
-      style={{ width: arenaSize, height: arenaSize }}
-    >
-      {/* Arena ring */}
-      <div
-        className="absolute inset-0 rounded-full border border-white/6"
-        style={{ boxShadow: "0 0 60px rgba(255,255,255,0.03)" }}
+    <div className="relative flex items-center justify-center mx-auto" style={{ width: size, height: size }}>
+      {/* Outer dashed ring */}
+      <div className="absolute inset-0 rounded-full border border-dashed border-white/8" />
+      {/* Inner glow */}
+      <motion.div
+        className="absolute w-24 h-24 rounded-full"
+        animate={spinning
+          ? { boxShadow: ["0 0 0px rgba(255,255,255,0)", "0 0 40px rgba(255,255,255,0.12)", "0 0 0px rgba(255,255,255,0)"] }
+          : { boxShadow: "0 0 0px rgba(255,255,255,0)" }
+        }
+        transition={{ duration: 1, repeat: spinning ? Infinity : 0 }}
       />
 
       {/* Players */}
@@ -149,70 +174,118 @@ function BottleArena({
           key={p.id}
           player={p}
           selected={selectedIdx === i}
+          isCurrentTurn={false}  // handled externally — passed via prop below
           index={i}
           total={players.length}
         />
       ))}
 
-      {/* Bottle */}
-      <motion.div animate={controls} className="absolute z-10">
-        <svg
-          viewBox="0 0 60 120"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          width="48"
-          height="96"
-        >
-          {/* Pointer line */}
-          <line x1="30" y1="60" x2="30" y2="8" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
-          <polygon points="30,2 26,10 34,10" fill="white" />
-          {/* Bottle base */}
-          <ellipse cx="30" cy="78" rx="14" ry="6" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
-          <rect x="20" y="68" width="20" height="22" rx="4" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
-          <rect x="24" y="55" width="12" height="18" rx="2" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+      {/* Bottle SVG — clickable */}
+      <motion.div
+        animate={controls}
+        onClick={canSpin ? onSpin : undefined}
+        className={`absolute z-10 ${canSpin ? "cursor-pointer" : "cursor-default"}`}
+        whileHover={canSpin ? { scale: 1.08 } : {}}
+        whileTap={canSpin ? { scale: 0.93 } : {}}
+      >
+        <svg viewBox="0 0 60 130" fill="none" xmlns="http://www.w3.org/2000/svg" width="50" height="104">
+          {/* Pointer arrow tip */}
+          <line x1="30" y1="62" x2="30" y2="10" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
+          <polygon points="30,3 26,12 34,12" fill="white" />
+          {/* Bottle body */}
+          <rect x="20" y="68" width="20" height="44" rx="5" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.22)" strokeWidth="1.2" />
+          <rect x="24" y="54" width="12" height="18" rx="3" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.22)" strokeWidth="1.2" />
+          {/* Shine */}
+          <line x1="24" y1="72" x2="24" y2="104" stroke="rgba(255,255,255,0.12)" strokeWidth="3" strokeLinecap="round" />
         </svg>
       </motion.div>
 
-      {/* Spin button */}
-      <motion.button
-        onClick={onSpin}
-        disabled={!canSpin}
-        whileHover={canSpin ? { scale: 1.06 } : {}}
-        whileTap={canSpin ? { scale: 0.93 } : {}}
-        className={`
-          absolute bottom-6 left-1/2 -translate-x-1/2 z-20
-          px-7 py-2.5 rounded-full text-sm font-bold tracking-widest uppercase
-          transition-all duration-200
-          ${canSpin
-            ? "bg-white text-black shadow-glow cursor-pointer"
-            : "bg-white/10 text-white/30 cursor-not-allowed"
-          }
-        `}
-      >
-        {spinning ? "Spinning" : "Spin"}
-      </motion.button>
+      {/* Spin prompt label inside arena */}
+      {canSpin && !spinning && (
+        <motion.p
+          className="absolute bottom-6 text-white/35 text-[11px] tracking-widest uppercase select-none"
+          animate={{ opacity: [0.35, 0.8, 0.35] }}
+          transition={{ duration: 2.4, repeat: Infinity }}
+        >
+          Tap bottle to spin
+        </motion.p>
+      )}
+      {spinning && (
+        <motion.p
+          className="absolute bottom-6 text-white/50 text-[11px] tracking-widest uppercase select-none"
+          animate={{ opacity: [0.5, 1, 0.5] }}
+          transition={{ duration: 0.7, repeat: Infinity }}
+        >
+          Spinning…
+        </motion.p>
+      )}
     </div>
   );
 }
 
+// ─── Turn indicator banner ─────────────────────────────────────────────────
+function TurnBanner({
+  player, isMe, round,
+}: { player: Player; isMe: boolean; round: number }) {
+  return (
+    <motion.div
+      key={player.id + round}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      transition={{ duration: 0.35 }}
+      className="flex flex-col items-center gap-1 text-center"
+    >
+      <p className="text-white/30 text-xs uppercase tracking-widest">Turn {round}</p>
+      <p className="text-xl font-black text-white">
+        {isMe ? "Your turn" : `${player.name}'s turn`}
+      </p>
+      {isMe && (
+        <motion.p
+          className="text-white/40 text-sm"
+          animate={{ opacity: [0.4, 1, 0.4] }}
+          transition={{ duration: 2, repeat: Infinity }}
+        >
+          Tap the bottle to spin ↑
+        </motion.p>
+      )}
+      {!isMe && (
+        <p className="text-white/30 text-sm">Waiting for {player.name} to spin…</p>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 export default function RoomPage() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const router = useRouter();
   const code = (params.code as string).toUpperCase();
-  const myName = searchParams.get("name") ?? "You";
   const isHost = searchParams.get("host") === "1";
+
+  // Resolve username: URL param wins on first load, otherwise use cached
+  const [myName] = useState<string>(() => {
+    const fromUrl = searchParams.get("name");
+    if (fromUrl) { saveUsername(fromUrl); return fromUrl; }
+    return getOrCreateUsername();
+  });
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [mode, setMode] = useState<ChaosMode>("easy");
   const [phase, setPhase] = useState<RoomPhase>("lobby");
+
+  // Turn state: index into `players` array
+  const [currentTurnIdx, setCurrentTurnIdx] = useState(0); // host is index 0
+  const [round, setRound] = useState(1);
+
+  // Spin result
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [chosenType, setChosenType] = useState<PromptType>("truth");
   const [prompt, setPrompt] = useState("");
   const [addingName, setAddingName] = useState("");
   const [addError, setAddError] = useState("");
 
-  // Init players from sessionStorage (host) or create guest entry
+  // Init players
   useEffect(() => {
     const stored = sessionStorage.getItem(`room:${code}`);
     if (stored) {
@@ -222,7 +295,7 @@ export default function RoomPage() {
         setMode(data.mode ?? "easy");
       } catch {}
     } else {
-      // Joining guest — seed with host placeholder + self
+      // Guest joining — seed with host placeholder + self
       setPlayers([
         { id: "host", name: "Host", isHost: true },
         { id: myName, name: myName },
@@ -230,43 +303,56 @@ export default function RoomPage() {
     }
   }, [code, myName]);
 
+  // Who am I in the players array?
+  const myPlayerIdx = players.findIndex((p) => p.name === myName);
+  const isMyTurn = myPlayerIdx !== -1 && myPlayerIdx === currentTurnIdx;
+  const currentTurnPlayer = players[currentTurnIdx] ?? players[0];
+
   const addPlayer = useCallback(() => {
     const n = addingName.trim();
     if (!n) return;
     if (n.length > 20) { setAddError("Too long"); return; }
     if (players.find((p) => p.name.toLowerCase() === n.toLowerCase())) {
-      setAddError("Name taken");
-      return;
+      setAddError("Name taken"); return;
     }
+    playClick();
     setPlayers((ps) => [...ps, { id: `${Date.now()}`, name: n }]);
     setAddingName("");
     setAddError("");
   }, [addingName, players]);
 
   const removePlayer = useCallback((id: string) => {
+    playClick();
     setPlayers((ps) => ps.filter((p) => p.id !== id));
   }, []);
 
   const startGame = useCallback(() => {
     if (players.length < 2) return;
+    playRoomCreated();
+    setCurrentTurnIdx(0);
+    setRound(1);
     setPhase("spinning");
   }, [players]);
 
   const handleSpin = useCallback(() => {
-    if (phase !== "spinning" && phase !== "reveal") return;
+    if (phase !== "spinning") return;
     setSelectedIdx(null);
     setPrompt("");
+    playBottleSpin();
 
-    const idx = Math.floor(Math.random() * players.length);
+    const others = players.map((_, i) => i).filter((i) => i !== currentTurnIdx);
+    const pool = others.length > 0 ? others : players.map((_, i) => i);
+    const idx = pool[Math.floor(Math.random() * pool.length)];
+
     setTimeout(() => {
+      playPlayerSelected();
       setSelectedIdx(idx);
       setPhase("choosing");
-    }, 4000);
-
-    setPhase("spinning");
-  }, [phase, players]);
+    }, 4200);
+  }, [phase, players, currentTurnIdx]);
 
   const choose = useCallback(async (type: PromptType) => {
+    playChoicePick();
     setChosenType(type);
     setPhase("loading");
 
@@ -282,14 +368,24 @@ export default function RoomPage() {
       setPrompt("What's the worst dare you've ever chickened out from?");
     }
 
+    playCardReveal();
     setPhase("reveal");
   }, [mode]);
 
   const nextRound = useCallback(() => {
+    const nextTurn = (currentTurnIdx + 1) % players.length;
+    // Hurray every full cycle (all players had a turn)
+    if (nextTurn === 0) {
+      playHurray();
+    } else {
+      playNextTurn();
+    }
     setSelectedIdx(null);
     setPrompt("");
+    setCurrentTurnIdx(nextTurn);
+    setRound((r) => r + 1);
     setPhase("spinning");
-  }, []);
+  }, [currentTurnIdx, players.length]);
 
   const selectedPlayer = selectedIdx !== null ? players[selectedIdx] : null;
 
@@ -313,7 +409,7 @@ export default function RoomPage() {
 
       <div className="flex-1 flex flex-col overflow-y-auto">
 
-        {/* LOBBY */}
+        {/* ── LOBBY ── */}
         <AnimatePresence mode="wait">
           {phase === "lobby" && (
             <motion.div
@@ -322,18 +418,27 @@ export default function RoomPage() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.4 }}
+              transition={{ duration: 0.35 }}
             >
               <div className="text-center">
                 <h1 className="text-2xl font-black text-white tracking-tight">Game Lobby</h1>
                 <p className="text-white/30 text-sm mt-1">Add all players, then start.</p>
               </div>
 
+              {/* You badge */}
+              <div className="glass rounded-xl px-4 py-2.5 flex items-center gap-2 self-start">
+                <div className="w-7 h-7 rounded-full bg-white text-black flex items-center justify-center text-xs font-bold">
+                  {myName.charAt(0).toUpperCase()}
+                </div>
+                <span className="text-white text-sm font-medium">{myName}</span>
+                <span className="text-white/30 text-xs">(you)</span>
+              </div>
+
               {/* Mode (host only) */}
               {isHost && (
                 <div className="w-full flex flex-col gap-2">
                   <p className="text-white/40 text-xs uppercase tracking-widest">Chaos Level</p>
-                  <ModeSelector value={mode} onChange={setMode} />
+                  <ModeSelector value={mode} onChange={(m) => { playClick(); setMode(m); }} />
                 </div>
               )}
 
@@ -356,12 +461,12 @@ export default function RoomPage() {
                             {p.name.charAt(0).toUpperCase()}
                           </div>
                           <span className="text-white text-sm font-medium">{p.name}</span>
-                          {p.isHost && <span className="text-white/25 text-xs">host</span>}
+                          {p.isHost && <span className="text-white/25 text-xs">host · spins first</span>}
                         </div>
                         {!p.isHost && players.length > 2 && (
                           <button
                             onClick={() => removePlayer(p.id)}
-                            className="text-white/20 hover:text-white/50 transition-colors text-lg leading-none"
+                            className="text-white/20 hover:text-white/50 transition-colors text-xl leading-none w-8 h-8 flex items-center justify-center"
                           >
                             ×
                           </button>
@@ -380,7 +485,7 @@ export default function RoomPage() {
                     value={addingName}
                     onChange={(e) => { setAddingName(e.target.value); setAddError(""); }}
                     onKeyDown={(e) => e.key === "Enter" && addPlayer()}
-                    placeholder="Add player..."
+                    placeholder="Add player name..."
                     maxLength={20}
                     className="
                       flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3
@@ -400,7 +505,6 @@ export default function RoomPage() {
                 {addError && <p className="text-white/40 text-xs">{addError}</p>}
               </div>
 
-              {/* Start game */}
               <motion.button
                 onClick={startGame}
                 disabled={players.length < 2}
@@ -417,59 +521,133 @@ export default function RoomPage() {
             </motion.div>
           )}
 
-          {/* GAME PHASE */}
+          {/* ── GAME ── */}
           {phase !== "lobby" && (
             <motion.div
               key="game"
-              className="flex-1 flex flex-col items-center px-5 py-6 gap-6 max-w-lg mx-auto w-full"
+              className="flex-1 flex flex-col items-center px-5 py-5 gap-5 max-w-lg mx-auto w-full"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              {/* Mode badge */}
+              {/* Mode + round badge */}
               <div className="flex items-center gap-2">
-                <span className="glass text-white/50 text-xs font-medium tracking-widest uppercase px-3 py-1.5 rounded-full">
-                  {mode} mode
+                <span className="glass text-white/40 text-xs font-medium tracking-widest uppercase px-3 py-1.5 rounded-full">
+                  {mode}
                 </span>
-                <span className="text-white/20 text-xs">{players.length} players</span>
+                <span className="text-white/20 text-xs">Round {round}</span>
               </div>
 
-              {/* Arena */}
+              {/* Turn indicator */}
+              <AnimatePresence mode="wait">
+                {(phase === "spinning") && currentTurnPlayer && (
+                  <TurnBanner
+                    key={`turn-${round}`}
+                    player={currentTurnPlayer}
+                    isMe={isMyTurn}
+                    round={round}
+                  />
+                )}
+              </AnimatePresence>
+
+              {/* Arena — show during spinning and choosing */}
               <AnimatePresence>
-                {(phase === "spinning" || phase === "choosing" || phase === "lobby") && (
+                {(phase === "spinning" || phase === "choosing") && (
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
+                    initial={{ opacity: 0, scale: 0.94 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.9 }}
                   >
-                    <BottleArena
-                      players={players}
-                      selectedIdx={selectedIdx}
-                      onSpin={handleSpin}
-                      spinning={phase === "spinning"}
-                      canSpin={phase === "spinning" || phase === "reveal"}
-                    />
+                    {/* Rebuild PlayerAvatar to carry isCurrentTurn */}
+                    <div
+                      className="relative flex items-center justify-center mx-auto"
+                      style={{ width: 340, height: 340 }}
+                    >
+                      <div className="absolute inset-0 rounded-full border border-dashed border-white/8" />
+
+                      {players.map((p, i) => {
+                        const angle = (i / players.length) * 360 - 90;
+                        const radius = players.length <= 4 ? 110 : players.length <= 6 ? 128 : 148;
+                        const rad = (angle * Math.PI) / 180;
+                        const x = Math.cos(rad) * radius;
+                        const y = Math.sin(rad) * radius;
+                        const isSelected = selectedIdx === i;
+                        const isTurn = i === currentTurnIdx;
+
+                        return (
+                          <motion.div
+                            key={p.id}
+                            className="absolute flex flex-col items-center gap-1"
+                            style={{
+                              left: "50%", top: "50%",
+                              transform: `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`,
+                            }}
+                            animate={isSelected ? { scale: 1.18 } : { scale: 1 }}
+                            transition={{ duration: 0.45, ease: [0.34, 1.56, 0.64, 1] }}
+                          >
+                            {isSelected && (
+                              <motion.div
+                                className="absolute -inset-1 rounded-full"
+                                animate={{ boxShadow: ["0 0 0px rgba(255,255,255,0)", "0 0 28px rgba(255,255,255,0.6)", "0 0 16px rgba(255,255,255,0.4)"] }}
+                                transition={{ duration: 0.7, repeat: Infinity, repeatType: "reverse" }}
+                              />
+                            )}
+                            {/* Arrow above current turn player */}
+                            {isTurn && phase === "spinning" && !isSelected && (
+                              <motion.span
+                                className="absolute -top-6 text-white text-xs select-none"
+                                animate={{ y: [0, -3, 0], opacity: [0.6, 1, 0.6] }}
+                                transition={{ duration: 1.2, repeat: Infinity }}
+                              >
+                                ▼
+                              </motion.span>
+                            )}
+                            <div
+                              className={`
+                                w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold
+                                border-2 transition-colors duration-200
+                                ${isSelected
+                                  ? "bg-white text-black border-white"
+                                  : isTurn && phase === "spinning"
+                                  ? "bg-white/15 text-white border-white/50"
+                                  : "bg-white/6 text-white/55 border-white/12"
+                                }
+                              `}
+                            >
+                              {p.name.charAt(0).toUpperCase()}
+                            </div>
+                            <span className={`text-[10px] max-w-[56px] truncate text-center ${isSelected ? "text-white font-semibold" : isTurn ? "text-white/70" : "text-white/35"}`}>
+                              {p.name}
+                            </span>
+                          </motion.div>
+                        );
+                      })}
+
+                      {/* Spinning bottle */}
+                      <BottleArena
+                        players={players}
+                        selectedIdx={selectedIdx}
+                        onSpin={handleSpin}
+                        spinning={phase === "spinning"}
+                        canSpin={phase === "spinning" && isMyTurn}
+                        currentTurnIdx={currentTurnIdx}
+                      />
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              {/* Chosen player banner */}
+              {/* Selected player reveal */}
               <AnimatePresence>
                 {selectedPlayer && phase === "choosing" && (
                   <motion.div
-                    initial={{ opacity: 0, y: 16, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -16 }}
-                    transition={{ duration: 0.4, ease: [0.34, 1.56, 0.64, 1] }}
                     className="text-center"
+                    initial={{ opacity: 0, scale: 0.9, y: 12 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -12 }}
+                    transition={{ duration: 0.4, ease: [0.34, 1.56, 0.64, 1] }}
                   >
-                    <motion.p
-                      className="text-white/40 text-xs uppercase tracking-widest mb-1"
-                      animate={{ opacity: [0.4, 1, 0.4] }}
-                      transition={{ duration: 2, repeat: Infinity }}
-                    >
-                      Spin stopped on
-                    </motion.p>
+                    <p className="text-white/40 text-xs uppercase tracking-widest mb-1">Bottle landed on</p>
                     <p className="text-3xl font-black text-white">{selectedPlayer.name}</p>
                   </motion.div>
                 )}
@@ -509,25 +687,16 @@ export default function RoomPage() {
               <AnimatePresence>
                 {(phase === "loading" || phase === "reveal") && (
                   <motion.div
-                    className="w-full flex flex-col gap-5"
+                    className="w-full flex flex-col gap-4"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                   >
-                    {/* Compact arena during reveal */}
-                    <AnimatePresence>
-                      {selectedPlayer && (
-                        <motion.div
-                          className="text-center"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                        >
-                          <p className="text-white/30 text-xs uppercase tracking-widest">
-                            {selectedPlayer.name}
-                          </p>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    {selectedPlayer && (
+                      <p className="text-white/30 text-xs uppercase tracking-widest text-center">
+                        {selectedPlayer.name}
+                      </p>
+                    )}
 
                     <PromptCard
                       type={chosenType}
@@ -537,34 +706,51 @@ export default function RoomPage() {
                     />
 
                     {phase === "reveal" && (
-                      <motion.div
-                        className="flex gap-3"
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.3 }}
-                      >
-                        <motion.button
-                          onClick={nextRound}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.97 }}
-                          className="flex-1 bg-white text-black rounded-xl py-4 font-bold text-sm tracking-wide"
+                      <>
+                        <motion.div
+                          className="flex gap-3"
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.3 }}
                         >
-                          Next Round →
-                        </motion.button>
-                        <motion.button
-                          onClick={() => choose(chosenType)}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.97 }}
-                          className="glass border border-white/10 text-white/60 rounded-xl px-5 py-4 text-sm"
-                        >
-                          Reroll
-                        </motion.button>
-                      </motion.div>
-                    )}
+                          <motion.button
+                            onClick={nextRound}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.97 }}
+                            className="flex-1 bg-white text-black rounded-xl py-4 font-bold text-sm tracking-wide"
+                          >
+                            Next Turn →
+                          </motion.button>
+                          <motion.button
+                            onClick={() => choose(chosenType)}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.97 }}
+                            className="glass border border-white/10 text-white/60 rounded-xl px-5 py-4 text-sm"
+                          >
+                            Reroll
+                          </motion.button>
+                        </motion.div>
 
-                    {/* Ad between rounds */}
-                    {phase === "reveal" && (
-                      <AdSlot slot="room-between-rounds" format="rectangle" className="rounded-xl overflow-hidden mt-1" />
+                        {/* Next spinner preview */}
+                        {players.length > 1 && (
+                          <motion.div
+                            className="glass rounded-xl px-4 py-3 flex items-center gap-3"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ delay: 0.5 }}
+                          >
+                            <span className="text-white/25 text-xs">Next to spin →</span>
+                            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-white">
+                              {players[(currentTurnIdx + 1) % players.length]?.name.charAt(0).toUpperCase()}
+                            </div>
+                            <span className="text-white/60 text-sm font-medium">
+                              {players[(currentTurnIdx + 1) % players.length]?.name}
+                            </span>
+                          </motion.div>
+                        )}
+
+                        <AdSlot slot="room-between-rounds" format="rectangle" className="rounded-xl overflow-hidden mt-1" />
+                      </>
                     )}
                   </motion.div>
                 )}
@@ -575,7 +761,7 @@ export default function RoomPage() {
         </AnimatePresence>
       </div>
 
-      {/* Bottom sticky ad */}
+      {/* Sticky bottom ad */}
       <div className="sticky bottom-0 border-t border-white/5 bg-black/90 backdrop-blur-md">
         <AdSlot slot="room-bottom-sticky" format="banner" />
       </div>

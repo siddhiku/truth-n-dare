@@ -1,7 +1,8 @@
 "use client";
 
-import { motion, useAnimation, useMotionValue, useTransform } from "framer-motion";
+import { motion, useAnimation } from "framer-motion";
 import { useCallback, useState } from "react";
+import { playBottleSpin, playPlayerSelected } from "@/lib/sounds";
 
 interface BottleProps {
   onSpinEnd?: (angle: number) => void;
@@ -11,12 +12,12 @@ interface BottleProps {
 
 export function Bottle({ onSpinEnd, disabled, size = 180 }: BottleProps) {
   const controls = useAnimation();
-  const rotation = useMotionValue(0);
   const [spinning, setSpinning] = useState(false);
 
   const spin = useCallback(async () => {
     if (spinning || disabled) return;
     setSpinning(true);
+    playBottleSpin();
 
     const extraSpins = 5 + Math.floor(Math.random() * 8);
     const finalAngle = Math.random() * 360;
@@ -31,6 +32,7 @@ export function Bottle({ onSpinEnd, disabled, size = 180 }: BottleProps) {
       },
     });
 
+    playPlayerSelected();
     onSpinEnd?.(finalAngle);
     setSpinning(false);
   }, [spinning, disabled, controls, onSpinEnd]);
